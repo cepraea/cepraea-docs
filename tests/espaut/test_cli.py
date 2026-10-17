@@ -136,7 +136,7 @@ def test_cmd_merge_check() -> dict[str, str]:
         store, task_id = _make_test_env(path)
         mock_result = {
             "verdict": "APTA_PARA_INTEGRACAO",
-            "criteria": [{"name": "C1", "status": "PASS", "detail": "ok"}],
+            "criteria": [{"criterion": "C1_preservation", "status": "PASS", "detail": "ok"}],
         }
         with patch("espaut.cli.require_store", return_value=store), \
              patch("espaut.cli.query_pr_state", return_value={"status": "available", "head_sha": "abc123"}), \

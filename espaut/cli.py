@@ -285,12 +285,12 @@ def cmd_reviews(args: argparse.Namespace) -> int:
     report = collect_reviews(store, task["task_id"], pr_number)
     reviews = report.get("reviews", [])
     comments = report.get("comments", [])
-    code_comments = report.get("code_comments", [])
+    code_comments = [c for c in comments if c.get("comment_type") == "code"]
 
     print(f"task={task['task_id']}  pr={pr_number}")
     print(f"  reviews={len(reviews)}  comments={len(comments)}  code_comments={len(code_comments)}")
     for r in reviews:
-        print(f"  review: author={r.get('author', '?')}  state={r.get('state', '?')}  classification={r.get('classification', '?')}")
+        print(f"  review: author={r.get('reviewer', '?')}  state={r.get('state', '?')}  classification={r.get('classification', '?')}")
     return 0
 
 
@@ -365,7 +365,7 @@ def cmd_merge_check(args: argparse.Namespace) -> int:
     print(f"task={task['task_id']}  verdict={verdict}")
     for criterion in result.get("criteria", []):
         status = criterion.get("status", "INDETERMINADO")
-        print(f"  {criterion.get('name', '?')}: {status} — {criterion.get('detail', '')}")
+        print(f"  {criterion.get('criterion', '?')}: {status} — {criterion.get('detail', '')}")
     return 0 if verdict == "APTA_PARA_INTEGRACAO" else 1
 
 

@@ -136,13 +136,14 @@ class Contracts(unittest.TestCase):
 
     def test_cli_merge_prints_actual_criterion(self):
         t={"task_id":"T1","pr_number":None}
-        report={"verdict":"NAO_APTA","criteria":[{"name":"C1","status":"FAIL","detail":"bad"}]}
+        report={"verdict":"NAO_APTA","criteria":[{"criterion":"C1","status":"FAIL","detail":"bad"}]}
         with patch("espaut.cli.require_store",return_value=Path("/tmp/nonexistent")),patch("espaut.cli._require_task",return_value=t),patch("espaut.cli.evaluate_merge_eligibility",return_value=report):
             output=io.StringIO()
             with contextlib.redirect_stdout(output):
                 rc=cli.cmd_merge_check(argparse.Namespace(task="T1"))
         self.assertEqual(rc,1)
         self.assertIn("FAIL",output.getvalue())
+        self.assertIn("C1:",output.getvalue())
 
     def test_session_gate_off_reports_pending(self):
         with tempfile.TemporaryDirectory() as d:
