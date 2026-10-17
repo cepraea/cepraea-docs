@@ -324,5 +324,36 @@ class Contracts(unittest.TestCase):
             paths=[x["path"] for x in worktree_status(str(p))]
             self.assertEqual(paths,["src/hello.txt"])
 
+    def test_tst015_three_failed_attempts_persist_and_fourth_blocked(self):
+        with tempfile.TemporaryDirectory() as d:
+            store=init_store(Path(d))
+            task={"task_id":"T1","pr_number":1}
+            pendency="PND-controlled"
+            write_json(store/"cache"/"pendencies-PR1.json",[{"pendency_id":pendency,"description":"fix defect","classification":"MUDANCA_REQUERIDA"}])
+            args=argparse.Namespace(task="T1",pendency=pendency,agent="codex",confirm=True)
+            with patch("espaut.cli.require_store",return_value=store),patch("espaut.cli._require_task",return_value=task),patch("espaut.cli.apply_agent_correction",return_value={"status":"error","reason":"controlled timeout"}) as agent:
+                with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
+                    for _ in range(4):
+                        self.assertEqual(cli.cmd_correct(args),1)
+            self.assertEqual(agent.call_count,3)
+            history=__import__("json").loads((store/"cache"/f"attempts-{pendency}.json").read_text())
+            self.assertEqual([a["attempt_number"] for a in history],[1,2,3])
+            self.assertTrue(all(a["attempt_state"]=="FALHA" for a in history))
+
+    def test_tst015_interrupted_agent_still_counts_attempt(self):
+        with tempfile.TemporaryDirectory() as d:
+            store=init_store(Path(d))
+            task={"task_id":"T1","pr_number":1}
+            pendency="PND-interrupted"
+            write_json(store/"cache"/"pendencies-PR1.json",[{"pendency_id":pendency,"description":"fix defect","classification":"MUDANCA_REQUERIDA"}])
+            args=argparse.Namespace(task="T1",pendency=pendency,agent="codex",confirm=True)
+            with patch("espaut.cli.require_store",return_value=store),patch("espaut.cli._require_task",return_value=task),patch("espaut.cli.apply_agent_correction",side_effect=TimeoutError("controlled")):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.cmd_correct(args),1)
+            history=__import__("json").loads((store/"cache"/f"attempts-{pendency}.json").read_text())
+            self.assertEqual(len(history),1)
+            self.assertEqual(history[0]["attempt_state"],"FALHA")
+            self.assertEqual(history[0]["outcome"],"exception:TimeoutError")
+
 if __name__=="__main__":
     unittest.main(verbosity=2)

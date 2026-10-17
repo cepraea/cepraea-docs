@@ -409,41 +409,30 @@ def cmd_correct(args: argparse.Namespace) -> int:
         return 1
 
     attempts_path = store / "cache" / f"attempts-{args.pendency}.json"
-    previous_attempts: list[dict[str, Any]] = []
-    if attempts_path.exists():
-        loaded = read_json(attempts_path)
-        if isinstance(loaded, list):
-            previous_attempts = loaded
-
-    check = run_correction_check(store, task["task_id"], args.pendency, previous_attempts)
-
-    if check["status"] == "blocked":
-        print(f"error: correction blocked — {check.get('reason', 'max attempts reached')}", file=sys.stderr)
+    previous_attempts = read_json(attempts_path) if attempts_path.exists() else []
+    if not isinstance(previous_attempts, list):
+        print("error: invalid attempt history", file=sys.stderr)
         return 1
 
+    check = run_correction_check(store, task["task_id"], args.pendency, previous_attempts)
+    if check["status"] == "blocked":
+        print(f"error: correction blocked — {check.get('reason', 'attempt limit')}", file=sys.stderr)
+        return 1
     if not args.confirm:
-        print(f"[dry-run] task={task['task_id']}  pendency={args.pendency}  status=allowed")
+        print(f"[dry-run] task={task['task_id']} pendency={args.pendency} status=allowed")
         return 0
 
-    attempt = make_attempt(args.pendency, len(previous_attempts) + 1)
-    changes: list[str] = []
+    source = None
+    tests = None
     if getattr(args, "agent", None):
         ledger = store / "cache" / f"pendencies-PR{task.get('pr_number')}.json"
         pending = read_json(ledger) if ledger.exists() else []
-        source = next((p for p in pending if p["pendency_id"] == args.pendency), None)
+        source = next((p for p in pending if p.get("pendency_id") == args.pendency), None)
         if not source:
-            print("error: source pendency not found in local GitHub review ledger", file=sys.stderr)
+            print("error: pendency missing from review ledger", file=sys.stderr)
             return 1
-        intervention = apply_agent_correction(
-            store, task, source, args.agent, cwd=repo_root() or ".",
-        )
-        if intervention["status"] != "verified":
-            print(f"error: correction not verified: {intervention.get('reason')}", file=sys.stderr)
-            return 1
-        changes = intervention["changed_files"]
     else:
-        # Manually applied changes require the same scope and independent test gate.
-        import subprocess
+        # Preflight only: do not count a correction attempt when no change is eligible.
         config = load_config(store)
         scope = task.get("authorized_scope") or config.get("eligible_patterns") or []
         changes = [entry["path"] for entry in worktree_status()]
@@ -452,25 +441,54 @@ def cmd_correct(args: argparse.Namespace) -> int:
         if not changes or not scope or not safe or not isinstance(tests, list) or not tests:
             print("error: manual correction requires scoped changes and configured tests", file=sys.stderr)
             return 1
-        verification = subprocess.run(tests, capture_output=True, text=True, timeout=180, check=False)
-        if verification.returncode != 0:
-            print("error: correction verification failed", file=sys.stderr)
-            return 1
-    message = f"espaut: correction for {args.pendency} on task {task['task_id']}"
-    report = run_preservation(store, task["task_id"], message, dry_run=False)
 
-    outcome = report.get("outcome", "unknown")
-    state = "CONCLUIDA" if outcome == "synchronized" else "FALHA"
-    record_attempt_result(
-        attempt, applied_changes=changes, validation_result="PASS",
-        output_revision=head_sha() if state == "CONCLUIDA" else None,
-        state=state,
+    # Write the INICIADA state BEFORE invoking an external agent/validator.
+    # A crash, timeout, or CLI restart must not reset the attempt counter.
+    attempt = make_attempt(
+        args.pendency, len(previous_attempts) + 1, input_revision=head_sha(),
     )
     previous_attempts.append(attempt)
     write_json(attempts_path, previous_attempts)
 
-    print(f"task={task['task_id']}  pendency={args.pendency}  outcome={outcome}")
-    return 0 if state == "CONCLUIDA" else 1
+    changes: list[str] = []
+    outcome = "unknown"
+    try:
+        if source is not None:
+            intervention = apply_agent_correction(
+                store, task, source, args.agent, cwd=repo_root() or ".",
+            )
+            if intervention.get("status") != "verified":
+                outcome = intervention.get("reason", "correction not verified")
+            else:
+                changes = intervention["changed_files"]
+        else:
+            import subprocess
+            verification = subprocess.run(
+                tests, capture_output=True, text=True, timeout=180, check=False,
+            )
+            if verification.returncode == 0:
+                changes = [entry["path"] for entry in worktree_status()]
+            else:
+                outcome = "tests_failed"
+        if changes:
+            message = f"espaut: correction for {args.pendency} on task {task['task_id']}"
+            report = run_preservation(store, task["task_id"], message, dry_run=False)
+            outcome = report.get("outcome", "unknown")
+    except Exception as exc:
+        outcome = f"exception:{type(exc).__name__}"
+
+    passed = outcome == "synchronized"
+    record_attempt_result(
+        attempt,
+        applied_changes=changes,
+        validation_result="PASS" if passed else "FAIL",
+        output_revision=head_sha() if passed else None,
+        state="CONCLUIDA" if passed else "FALHA",
+    )
+    attempt["outcome"] = outcome
+    write_json(attempts_path, previous_attempts)
+    print(f"task={task['task_id']} pendency={args.pendency} outcome={outcome}")
+    return 0 if passed else 1
 
 
 # -- Verify-correction subcommand ---------------------------------------------

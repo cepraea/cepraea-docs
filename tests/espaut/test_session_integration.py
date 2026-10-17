@@ -124,5 +124,47 @@ class SessionGitIntegration(unittest.TestCase):
         self.assertNotEqual(result.returncode,0)
         self.assertEqual(git("branch","--show-current",cwd=self.work),"main")
 
+    def test_tst018_recovery_after_remote_push_does_not_duplicate(self):
+        from espaut.recovery import recover_task_state
+        from espaut.events import log_event
+        head=git("rev-parse","HEAD",cwd=self.work)
+        log_event(self.store,"commit_created",task_id="TASK-001",object_reference=head)
+        task={"task_id":"TASK-001","branch_name":"task/test","commit_shas":[head]}
+        first=recover_task_state(self.store,task,str(self.work))
+        second=recover_task_state(self.store,task,str(self.work))
+        self.assertEqual(first["remote_status"],"synchronized")
+        self.assertEqual(second["remote_status"],"synchronized")
+        self.assertEqual(first["status"],"recovered")
+        self.assertEqual(git("rev-list","--count","HEAD",cwd=self.work),"1")
+        self.assertEqual(git("--git-dir",str(self.remote),"rev-parse","refs/heads/task/test",cwd=self.home),head)
+
+    def test_tst018_recovery_local_ahead_does_not_claim_sync(self):
+        from espaut.recovery import recover_task_state
+        (self.work/"new.txt").write_text("local")
+        git("add","new.txt",cwd=self.work)
+        git("commit","-m","local only",cwd=self.work)
+        head=git("rev-parse","HEAD",cwd=self.work)
+        task={"task_id":"TASK-001","branch_name":"task/test","commit_shas":[head]}
+        result=recover_task_state(self.store,task,str(self.work))
+        self.assertEqual(result["remote_status"],"diverged")
+        self.assertEqual(result["status"],"discrepancies_found")
+        self.assertIn("remote_sync",[d["field"] for d in result["discrepancies"]])
+
+    def test_tst006_rejected_push_preserves_local_commit(self):
+        from espaut.preservation import run_preservation
+        hook=self.remote/"hooks"/"pre-receive"
+        hook.write_text("#!/bin/sh\necho controlled push rejection >&2\nexit 1\n")
+        hook.chmod(0o755)
+        (self.work/"new.txt").write_text("pending work")
+        before=git("rev-parse","HEAD",cwd=self.work)
+        report=run_preservation(self.store,"TASK-001","test rejected push",dry_run=False,cwd=str(self.work))
+        after=git("rev-parse","HEAD",cwd=self.work)
+        remote=git("--git-dir",str(self.remote),"rev-parse","refs/heads/task/test",cwd=self.home)
+        self.assertEqual(report["outcome"],"error",report)
+        self.assertNotEqual(before,after)
+        self.assertEqual(before,remote)
+        self.assertFalse((self.work/"new.txt").read_text()=="")
+        self.assertEqual(git("status","--porcelain",cwd=self.work),"")
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
