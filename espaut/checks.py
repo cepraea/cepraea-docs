@@ -123,6 +123,7 @@ def query_checks(
                 "task_id": task_id,
                 "pr_number": pr_number,
                 "checks": [],
+                "evaluated_revision": evaluated_revision,
                 "aggregate": CheckState.NAO_CONFIGURADO.value,
             }
         return {
@@ -130,6 +131,7 @@ def query_checks(
             "task_id": task_id,
             "pr_number": pr_number,
             "checks": [],
+            "evaluated_revision": evaluated_revision,
             "aggregate": CheckState.NAO_CONFIGURADO.value,
         }
 

@@ -30,9 +30,9 @@ def test_metachar_rejected() -> dict[str, str]:
     for name, args in cases.items():
         try:
             validate_subprocess_args(args)
-            checks[name] = "FAIL"
-        except ValueError:
             checks[name] = "PASS"
+        except ValueError:
+            checks[name] = "FAIL"
     return checks
 
 

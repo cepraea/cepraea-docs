@@ -18,10 +18,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "preservation_events": ["explicit"],
     "eligible_patterns": [],
     "ai_enabled": False,
+    "ai_sharing_authorized": False,
     "auto_commit": False,
     "resolver_roles": ["author", "assigned_reviewers"],
     "merge_policy": "manual",
     "correction_max_attempts": 3,
+    "correction_test_command": [],
     "retention_policy": "retain_all",
     "ci_required": False,
 }

@@ -6,14 +6,18 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from espaut import __version__
 from espaut.checks import compute_aggregate, query_checks
-from espaut.correction import make_attempt, make_diagnosis, record_attempt_result, run_correction_check
+from espaut.correction import make_attempt, make_diagnosis, record_attempt_result, run_correction_check, apply_agent_correction, check_scope_compliance
 from espaut.git_ops import (
     current_branch,
+    checkout_branch,
+    create_branch,
+    remote_head_sha,
     has_changes,
     has_incomplete_operation,
     head_sha,
@@ -141,12 +145,35 @@ def cmd_task_create(args: argparse.Namespace) -> int:
     store = require_store()
     task_id = new_id("TASK-")
     root = repo_root() or "."
+    branch = current_branch()
+    if branch is None:
+        print("error: detached HEAD; cannot register task", file=sys.stderr)
+        return 1
+    base_sha = remote_head_sha("origin", "main") or head_sha()
+    if branch in ("main", "master"):
+        if has_changes():
+            print("error: preserve existing changes before creating a task branch", file=sys.stderr)
+            return 1
+        target = f"espaut/{task_id.lower()}"
+        created = create_branch(target)
+        if created.returncode != 0:
+            print(f"error: cannot create task branch: {created.stderr}", file=sys.stderr)
+            return 1
+        moved = checkout_branch(target)
+        if moved.returncode != 0:
+            print(f"error: cannot switch task branch: {moved.stderr}", file=sys.stderr)
+            return 1
+        branch = target
     task = make_task(
         task_id=task_id,
         repository_id=root,
         title=args.title,
         objective=args.objective or "",
+        authorized_scope=load_config(store).get("eligible_patterns", []),
     )
+    task["branch_name"] = branch
+    task["base_commit_sha"] = base_sha
+    task["head_commit_sha"] = head_sha()
     write_json(store / "tasks" / f"{task_id}.json", task)
     print(f"task_id={task_id}  state={task['state']}  title={args.title}")
     return 0
@@ -177,7 +204,7 @@ def cmd_preserve(args: argparse.Namespace) -> int:
         for step in report.get("steps", []):
             print(f"  {step['step']}: {step['result'].get('status', '?')}")
 
-    return 0 if report.get("outcome") not in ("staging_failed", "commit_failed") else 1
+    return 0 if report.get("outcome") in ("synchronized", "nothing_to_preserve", "dry_run_complete") else 1
 
 
 def cmd_pr_create(args: argparse.Namespace) -> int:
@@ -196,7 +223,7 @@ def cmd_pr_create(args: argparse.Namespace) -> int:
 
     pr_number = result["pr_number"]
     url = result.get("url", "")
-    update_task_pr(task, pr_number, url)
+    update_task_pr(task, pr_number, url, head_sha=head_sha())
     write_json(store / "tasks" / f"{task['task_id']}.json", task)
     print(f"task={task['task_id']}  pr={pr_number}  status={result['status']}  url={url}")
     return 0
@@ -239,7 +266,8 @@ def cmd_checks(args: argparse.Namespace) -> int:
     print(f"task={task['task_id']}  pr={pr_number}  aggregate={aggregate}")
     for c in checks:
         print(f"  {c.get('name', '?')}: {c.get('normalized_result', '?')}")
-    return 0
+    ci_required = load_config(store).get("ci_required", False)
+    return 0 if aggregate == "APROVADO" or (aggregate == "NAO_CONFIGURADO" and not ci_required) else 1
 
 
 # -- Reviews subcommand -------------------------------------------------------
@@ -257,12 +285,12 @@ def cmd_reviews(args: argparse.Namespace) -> int:
     report = collect_reviews(store, task["task_id"], pr_number)
     reviews = report.get("reviews", [])
     comments = report.get("comments", [])
-    code_comments = report.get("code_comments", [])
+    code_comments = [c for c in comments if c.get("comment_type") == "code"]
 
     print(f"task={task['task_id']}  pr={pr_number}")
     print(f"  reviews={len(reviews)}  comments={len(comments)}  code_comments={len(code_comments)}")
     for r in reviews:
-        print(f"  review: author={r.get('author', '?')}  state={r.get('state', '?')}  classification={r.get('classification', '?')}")
+        print(f"  review: author={r.get('reviewer', '?')}  state={r.get('state', '?')}  classification={r.get('classification', '?')}")
     return 0
 
 
@@ -279,12 +307,12 @@ def cmd_pendencies(args: argparse.Namespace) -> int:
         return 1
 
     report = collect_reviews(store, task["task_id"], pr_number)
-    pendencies = extract_pendencies(report, task_id=task["task_id"])
+    pendencies = extract_pendencies(report, task_id=task["task_id"], store=store)
     blocking = has_blocking_pendencies(pendencies)
 
     print(f"task={task['task_id']}  pr={pr_number}  total={len(pendencies)}  blocking={blocking}")
     for p in pendencies:
-        flag = "[BLOCKING]" if p.get("is_blocking") else "[info]"
+        flag = "[BLOCKING]" if p.get("blocking_effect") else "[info]"
         print(f"  {flag} {p.get('pendency_id', '?')}: {p.get('classification', '?')} — {p.get('description', '')[:80]}")
     return 1 if blocking else 0
 
@@ -304,9 +332,22 @@ def cmd_merge_check(args: argparse.Namespace) -> int:
     pendencies: list[dict[str, Any]] = []
 
     if pr_number:
-        checks_report = query_checks(store, task["task_id"], pr_number)
+        remote_pr = query_pr_state(pr_number)
+        pr_head = remote_pr.get("head_sha")
+        if remote_pr.get("status") != "available" or not pr_head:
+            print("error: PR head not verifiable", file=sys.stderr)
+            return 1
+        checks_report = query_checks(
+            store, task["task_id"], pr_number, evaluated_revision=pr_head,
+        )
         reviews_report = collect_reviews(store, task["task_id"], pr_number)
-        pendencies = extract_pendencies(reviews_report, task_id=task["task_id"])
+        reviews_report["review_decision"] = remote_pr.get("review_decision")
+        reviews_report["is_draft"] = remote_pr.get("is_draft")
+        pendencies = extract_pendencies(reviews_report, task_id=task["task_id"], store=store)
+        # Recheck the remote head in case a new push invalidated the evidence.
+        if query_pr_state(pr_number).get("head_sha") != pr_head:
+            print("error: PR head changed during verification", file=sys.stderr)
+            return 1
 
     decisions_dir = store / "decisions"
     decisions: list[dict[str, Any]] = []
@@ -323,8 +364,8 @@ def cmd_merge_check(args: argparse.Namespace) -> int:
     verdict = result.get("verdict", "?")
     print(f"task={task['task_id']}  verdict={verdict}")
     for criterion in result.get("criteria", []):
-        status = "PASS" if criterion.get("passed") else "FAIL"
-        print(f"  {criterion.get('name', '?')}: {status} — {criterion.get('detail', '')}")
+        status = criterion.get("status", "INDETERMINADO")
+        print(f"  {criterion.get('criterion', '?')}: {status} — {criterion.get('detail', '')}")
     return 0 if verdict == "APTA_PARA_INTEGRACAO" else 1
 
 
@@ -368,34 +409,86 @@ def cmd_correct(args: argparse.Namespace) -> int:
         return 1
 
     attempts_path = store / "cache" / f"attempts-{args.pendency}.json"
-    previous_attempts: list[dict[str, Any]] = []
-    if attempts_path.exists():
-        loaded = read_json(attempts_path)
-        if isinstance(loaded, list):
-            previous_attempts = loaded
-
-    check = run_correction_check(store, task["task_id"], args.pendency, previous_attempts)
-
-    if check["status"] == "blocked":
-        print(f"error: correction blocked — {check.get('reason', 'max attempts reached')}", file=sys.stderr)
+    previous_attempts = read_json(attempts_path) if attempts_path.exists() else []
+    if not isinstance(previous_attempts, list):
+        print("error: invalid attempt history", file=sys.stderr)
         return 1
 
+    check = run_correction_check(store, task["task_id"], args.pendency, previous_attempts)
+    if check["status"] == "blocked":
+        print(f"error: correction blocked — {check.get('reason', 'attempt limit')}", file=sys.stderr)
+        return 1
     if not args.confirm:
-        print(f"[dry-run] task={task['task_id']}  pendency={args.pendency}  status=allowed")
+        print(f"[dry-run] task={task['task_id']} pendency={args.pendency} status=allowed")
         return 0
 
-    attempt = make_attempt(args.pendency, len(previous_attempts) + 1)
-    message = f"espaut: correction for {args.pendency} on task {task['task_id']}"
-    report = run_preservation(store, task["task_id"], message, dry_run=False)
+    source = None
+    tests = None
+    if getattr(args, "agent", None):
+        ledger = store / "cache" / f"pendencies-PR{task.get('pr_number')}.json"
+        pending = read_json(ledger) if ledger.exists() else []
+        source = next((p for p in pending if p.get("pendency_id") == args.pendency), None)
+        if not source:
+            print("error: pendency missing from review ledger", file=sys.stderr)
+            return 1
+    else:
+        # Preflight only: do not count a correction attempt when no change is eligible.
+        config = load_config(store)
+        scope = task.get("authorized_scope") or config.get("eligible_patterns") or []
+        changes = [entry["path"] for entry in worktree_status()]
+        tests = config.get("correction_test_command")
+        safe, _ = check_scope_compliance(changes, scope)
+        if not changes or not scope or not safe or not isinstance(tests, list) or not tests:
+            print("error: manual correction requires scoped changes and configured tests", file=sys.stderr)
+            return 1
 
-    outcome = report.get("outcome", "unknown")
-    state = "CONCLUIDA" if outcome not in ("staging_failed", "commit_failed") else "FALHA"
-    record_attempt_result(attempt, applied_changes=[], state=state)
+    # Write the INICIADA state BEFORE invoking an external agent/validator.
+    # A crash, timeout, or CLI restart must not reset the attempt counter.
+    attempt = make_attempt(
+        args.pendency, len(previous_attempts) + 1, input_revision=head_sha(),
+    )
     previous_attempts.append(attempt)
     write_json(attempts_path, previous_attempts)
 
-    print(f"task={task['task_id']}  pendency={args.pendency}  outcome={outcome}")
-    return 0 if state == "CONCLUIDA" else 1
+    changes: list[str] = []
+    outcome = "unknown"
+    try:
+        if source is not None:
+            intervention = apply_agent_correction(
+                store, task, source, args.agent, cwd=repo_root() or ".",
+            )
+            if intervention.get("status") != "verified":
+                outcome = intervention.get("reason", "correction not verified")
+            else:
+                changes = intervention["changed_files"]
+        else:
+            import subprocess
+            verification = subprocess.run(
+                tests, capture_output=True, text=True, timeout=180, check=False,
+            )
+            if verification.returncode == 0:
+                changes = [entry["path"] for entry in worktree_status()]
+            else:
+                outcome = "tests_failed"
+        if changes:
+            message = f"espaut: correction for {args.pendency} on task {task['task_id']}"
+            report = run_preservation(store, task["task_id"], message, dry_run=False)
+            outcome = report.get("outcome", "unknown")
+    except Exception as exc:
+        outcome = f"exception:{type(exc).__name__}"
+
+    passed = outcome == "synchronized"
+    record_attempt_result(
+        attempt,
+        applied_changes=changes,
+        validation_result="PASS" if passed else "FAIL",
+        output_revision=head_sha() if passed else None,
+        state="CONCLUIDA" if passed else "FALHA",
+    )
+    attempt["outcome"] = outcome
+    write_json(attempts_path, previous_attempts)
+    print(f"task={task['task_id']} pendency={args.pendency} outcome={outcome}")
+    return 0 if passed else 1
 
 
 # -- Verify-correction subcommand ---------------------------------------------
@@ -412,7 +505,7 @@ def cmd_verify_correction(args: argparse.Namespace) -> int:
 
     checks_report = query_checks(store, task["task_id"], pr_number)
     reviews_report = collect_reviews(store, task["task_id"], pr_number)
-    pendencies = extract_pendencies(reviews_report, task_id=task["task_id"])
+    pendencies = extract_pendencies(reviews_report, task_id=task["task_id"], store=store)
     blocking = has_blocking_pendencies(pendencies)
 
     aggregate = checks_report.get("aggregate", "?")
@@ -420,9 +513,9 @@ def cmd_verify_correction(args: argparse.Namespace) -> int:
     print(f"  checks_aggregate={aggregate}")
     print(f"  pendencies={len(pendencies)}  blocking={blocking}")
     for p in pendencies:
-        flag = "[BLOCKING]" if p.get("is_blocking") else "[info]"
+        flag = "[BLOCKING]" if p.get("blocking_effect") else "[info]"
         print(f"  {flag} {p.get('pendency_id', '?')}: {p.get('classification', '?')}")
-    return 1 if blocking else 0
+    return 0 if not blocking and aggregate == "APROVADO" else 1
 
 
 # -- Recover subcommand -------------------------------------------------------
@@ -485,7 +578,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     print(f"  preservation={pending['status']}")
     if pending.get("eligible"):
         print(f"  pending_files={len(pending['eligible'])}")
-    return 0
+    return 0 if sync["status"] == "synchronized" and pending["status"] == "clean" else 1
 
 
 # -- Watch subcommand ----------------------------------------------------------
@@ -511,7 +604,64 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
     pending = detect_pending_preservation(store, task["task_id"])
     print(f"  preservation={pending['status']}")
-    return 0
+    return 0 if (
+        sync["status"] == "synchronized"
+        and pending["status"] == "clean"
+        and base_result["status"] == "unchanged"
+        and (base_result["status"] == "unknown" or conflict["status"] == "no_conflict")
+    ) else 1
+
+
+def cmd_session(args: argparse.Namespace) -> int:
+    """Run an agent command and check preservation at its completion."""
+    from espaut.events import log_event
+    store = require_store()
+    task = _require_task(store, args.task)
+    if not task:
+        return 1
+    command = list(args.command_args or [])
+    if command and command[0] == "--":
+        command.pop(0)
+    if not command:
+        print("error: command required after --", file=sys.stderr)
+        return 2
+    config = load_config(store)
+    log_event(store, "agent_session_started", task_id=task["task_id"], detail=command[0])
+    try:
+        result = subprocess.run(command, check=False)
+        exit_code = result.returncode
+    except OSError as exc:
+        print(f"error: cannot run agent: {exc}", file=sys.stderr)
+        exit_code = 2
+    log_event(store, "agent_session_finished", task_id=task["task_id"], detail=f"exit={exit_code}")
+    pending = detect_pending_preservation(store, task["task_id"])
+    if pending["status"] != "pending":
+        if exit_code != 0:
+            return exit_code
+        sync = check_sync_state(store, task["task_id"])
+        if sync.get("status") != "synchronized":
+            print("PRESERVATION_PENDING: remote HEAD not synchronized")
+            return 3
+        return 0
+    if exit_code != 0:
+        print("PRESERVATION_PENDING: command failed; uncommitted changes retained")
+        return exit_code
+    if not config.get("auto_commit", False):
+        print("PRESERVATION_PENDING: auto_commit disabled; use preserve --confirm")
+        return 3
+    if not config.get("eligible_patterns"):
+        print("PRESERVATION_PENDING: configure explicit eligible_patterns before auto_commit")
+        return 3
+    branch = current_branch()
+    if branch in (None, "main", "master") or (task.get("branch_name") and branch != task["branch_name"]):
+        print("PRESERVATION_PENDING: cannot automatically push protected or unrelated branch")
+        return 3
+    report = run_preservation(
+        store, task["task_id"], f"espaut: preserve session {task['task_id']}",
+        dry_run=False,
+    )
+    print(f"session preservation: {report['outcome']}")
+    return 0 if report["outcome"] == "synchronized" else 3
 
 
 # -- Parser --------------------------------------------------------------------
@@ -587,6 +737,8 @@ def build_parser() -> argparse.ArgumentParser:
     correct_p.add_argument("--task", required=True, help="Task ID")
     correct_p.add_argument("--pendency", required=True, help="Pendency ID")
     correct_p.add_argument("--confirm", action="store_true", help="Execute (not dry-run)")
+    correct_p.add_argument("--agent", choices=["codex", "claude"],
+                           help="Apply a scoped correction using authenticated local agent")
 
     # verify-correction
     verify_p = sub.add_parser("verify-correction", help="Re-check after correction")
@@ -604,6 +756,10 @@ def build_parser() -> argparse.ArgumentParser:
     # sync
     sync_p = sub.add_parser("sync", help="Check sync state with remote")
     sync_p.add_argument("--task", help="Task ID")
+
+    session_p = sub.add_parser("session", help="Run a coding command with post-exit preservation gate")
+    session_p.add_argument("--task", required=True, help="Task ID")
+    session_p.add_argument("command_args", nargs=argparse.REMAINDER, help="Command after --")
 
     # watch
     watch_p = sub.add_parser("watch", help="One-shot watch: sync + base + conflicts")
@@ -637,6 +793,7 @@ def main() -> int:
         "audit": cmd_audit,
         "sync": cmd_sync,
         "watch": cmd_watch,
+        "session": cmd_session,
     }
 
     if args.command == "task":

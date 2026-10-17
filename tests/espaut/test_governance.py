@@ -262,7 +262,15 @@ def test_full_eligibility_pass() -> dict[str, str]:
             capture_output=True, text=True, cwd=str(path),
         ).stdout.strip()
 
-        task = {"task_id": "T1", "acceptance_criteria": [], "commit_shas": [sha]}
+        task = {
+            "task_id": "T1", "acceptance_criteria": ["behavior"],
+            "acceptance_revision": sha,
+            "acceptance_results": {"behavior": {
+                "status": "PASS", "revision": sha,
+                "evidence_reference": "test-run:TST-001",
+            }},
+            "commit_shas": [sha],
+        }
         checks_report = {"aggregate": "APROVADO", "checks": [{"evaluated_revision": sha}]}
         reviews_report = {"reviews": [{"state": "APPROVED"}]}
         decisions = [{"task_id": "T1", "decision_type": "merge_authorization", "decision_value": "approved", "authority": "user"}]

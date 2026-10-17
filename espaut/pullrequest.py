@@ -160,7 +160,7 @@ def reconcile_pr_state(
         else:
             changes.append("pr_closed_externally")
 
-    local_sha = task.get("base_commit_sha")
+    local_sha = task.get("head_commit_sha")
     remote_sha = remote.get("head_sha")
     if local_sha and remote_sha and local_sha != remote_sha:
         changes.append("head_sha_diverged")
@@ -194,5 +194,5 @@ def update_task_pr(
     if url:
         task["pr_url"] = url
     if head_sha:
-        task["base_commit_sha"] = head_sha
+        task["head_commit_sha"] = head_sha
     return task

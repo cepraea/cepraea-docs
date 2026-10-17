@@ -6,7 +6,9 @@ from __future__ import annotations
 import re
 
 
-SHELL_META = re.compile(r"[;&|`$()!\n\r]")
+# All subprocess invocations use argument arrays, never a shell.
+# Shell punctuation in PR bodies, GraphQL queries and filenames is literal text.
+SHELL_META = re.compile(r"\x00")
 
 SECRET_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,255}"),

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from espaut.events import log_event
-from espaut.git_ops import current_branch, has_changes, head_sha, is_git_repo
+from espaut.git_ops import current_branch, has_changes, head_sha, is_git_repo, remote_head_sha
 from espaut.store import read_json, read_jsonl
 
 
@@ -51,6 +51,16 @@ def recover_task_state(
         })
         actions.append("verify new commits belong to this task")
 
+    remote_sha = remote_head_sha("origin", actual_branch, cwd) if actual_branch else None
+    remote_status = "no_remote" if remote_sha is None else (
+        "synchronized" if remote_sha == actual_sha else "diverged"
+    )
+    if remote_status == "diverged":
+        discrepancies.append({
+            "field": "remote_sync", "recorded": remote_sha, "actual": actual_sha or "unknown",
+        })
+        actions.append("verify remote state and preserve local commit before any retry")
+
     if has_changes(cwd):
         discrepancies.append({
             "field": "worktree",
@@ -73,6 +83,8 @@ def recover_task_state(
         "actions": actions,
         "actual_branch": actual_branch,
         "actual_sha": actual_sha,
+        "remote_sha": remote_sha,
+        "remote_status": remote_status,
     }
 
 

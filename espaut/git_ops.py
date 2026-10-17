@@ -61,18 +61,23 @@ def worktree_status(cwd: str | None = None) -> list[dict[str, str]]:
 
     Each entry has keys ``index``, ``worktree``, and ``path``.
     """
-    r = run_git("status", "--porcelain=v1", cwd=cwd)
+    r = run_git("status", "--porcelain=v1", "-z", "--untracked-files=all", cwd=cwd)
     if r.returncode != 0:
-        return []
+        raise RuntimeError(f"git status failed: {r.stderr[:300]}")
     entries: list[dict[str, str]] = []
-    for line in r.stdout.splitlines():
+    parts = r.stdout.split("\0")
+    i = 0
+    while i < len(parts):
+        line = parts[i]
+        i += 1
         if len(line) < 4:
             continue
-        entries.append({
-            "index": line[0],
-            "worktree": line[1],
-            "path": line[3:],
-        })
+        entry = {"index": line[0], "worktree": line[1], "path": line[3:]}
+        if "R" in (line[0], line[1]) or "C" in (line[0], line[1]):
+            if i < len(parts):
+                entry["old_path"] = parts[i]
+                i += 1
+        entries.append(entry)
     return entries
 
 
@@ -89,10 +94,10 @@ def staged_diff(cwd: str | None = None) -> str:
 
 def staged_files(cwd: str | None = None) -> list[str]:
     """Return the list of files in the staging area."""
-    r = run_git("diff", "--cached", "--name-only", cwd=cwd)
+    r = run_git("diff", "--cached", "--name-only", "-z", cwd=cwd)
     if r.returncode != 0:
-        return []
-    return [f for f in r.stdout.splitlines() if f.strip()]
+        raise RuntimeError(f"git diff --cached failed: {r.stderr[:300]}")
+    return [f for f in r.stdout.split("\0") if f]
 
 
 def stage_files(paths: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -119,8 +124,10 @@ def push(
     if set_upstream:
         args.append("-u")
     args.append(remote)
-    if branch:
-        args.append(branch)
+    actual_branch = branch or current_branch(cwd)
+    if not actual_branch:
+        raise RuntimeError("cannot push detached HEAD without an explicit branch")
+    args.append(actual_branch)
     return run_git(*args, cwd=cwd, timeout=60)
 
 

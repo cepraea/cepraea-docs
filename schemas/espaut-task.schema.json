@@ -38,11 +38,15 @@
     },
     "acceptance_criteria": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "authorized_scope": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "state": {
       "type": "string",
@@ -62,31 +66,84 @@
       ]
     },
     "branch_name": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "pr_number": {
-      "type": ["integer", "null"]
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "base_commit_sha": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "created_at": {
       "type": "string",
       "format": "date-time"
     },
     "closed_at": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "date-time"
     },
     "sessions": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "commit_shas": {
       "type": "array",
       "items": {
         "type": "string",
         "pattern": "^[0-9a-f]{40}$"
+      }
+    },
+    "head_commit_sha": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "acceptance_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "acceptance_results": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "status",
+          "revision",
+          "evidence_reference"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "INDETERMINADO"
+            ]
+          },
+          "revision": {
+            "type": "string"
+          },
+          "evidence_reference": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       }
     }
   }

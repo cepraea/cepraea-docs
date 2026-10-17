@@ -147,7 +147,7 @@ def test_reconcile_sha_diverged() -> dict[str, str]:
     }
     with tempfile.TemporaryDirectory() as tmp:
         store = init_store(Path(tmp))
-        task = {"task_id": "TASK-001", "pr_number": 42, "base_commit_sha": "old_sha"}
+        task = {"task_id": "TASK-001", "pr_number": 42, "head_commit_sha": "old_sha"}
         with patch("espaut.pullrequest.pr_view_json", _mock_pr_view(mock_data)):
             result = reconcile_pr_state(store, task)
             return {
@@ -161,7 +161,7 @@ def test_update_task_pr() -> dict[str, str]:
     return {
         "pr_number": "PASS" if updated["pr_number"] == 42 else "FAIL",
         "url": "PASS" if updated.get("pr_url") == "https://gh/pr/42" else "FAIL",
-        "sha": "PASS" if updated.get("base_commit_sha") == "abc123" else "FAIL",
+        "sha": "PASS" if "abc123" == updated.get("head_commit_sha") else "FAIL",
     }
 
 

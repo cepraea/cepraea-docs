@@ -129,6 +129,7 @@ def test_full_preservation_local() -> dict[str, str]:
         path = Path(tmp)
         _init_repo(path)
         _make_commit(path, "a.txt", "hello", "init")
+        subprocess.run(["git", "switch", "-c", "test/task"], capture_output=True, check=True, cwd=str(path))
         store = init_store(path)
         (path / "b.txt").write_text("new file")
         report = run_preservation(store, "TASK-001", "preserve b.txt", dry_run=False, cwd=str(path))

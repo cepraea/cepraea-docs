@@ -23,6 +23,15 @@ def check_sync_state(
     local = head_sha(cwd)
     br = branch or current_branch(cwd)
     remote_sha = remote_head_sha(remote, br, cwd)
+    if remote_sha:
+        local_object = run_git("cat-file", "-e", f"{remote_sha}^{{commit}}", cwd=cwd)
+        if local_object.returncode != 0:
+            result = run_git(
+                "fetch", "--no-tags", remote,
+                f"refs/heads/{br}:refs/remotes/{remote}/{br}", cwd=cwd, timeout=60,
+            )
+            if result.returncode != 0:
+                return {"status": "error", "error": "failed to fetch remote tracking revision"}
 
     if not local:
         return {"status": "error", "error": "cannot determine local HEAD"}
@@ -113,6 +122,13 @@ def check_merge_conflict(
     cwd: str | None = None,
 ) -> dict[str, Any]:
     """Check for merge conflicts without actually merging (REQ-CON-002)."""
+    refreshed = run_git(
+        "fetch", "--no-tags", "origin",
+        f"refs/heads/{base_branch}:refs/remotes/origin/{base_branch}",
+        cwd=cwd, timeout=60,
+    )
+    if refreshed.returncode != 0:
+        return {"status": "unknown", "error": "base branch fetch failed"}
     r = run_git("merge-tree", "--write-tree", f"origin/{base_branch}", "HEAD", cwd=cwd, timeout=30)
 
     if r.returncode == 0:

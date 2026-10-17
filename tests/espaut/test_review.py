@@ -189,7 +189,8 @@ def test_collect_reviews_mock() -> dict[str, str]:
         store = init_store(Path(tmp))
         with patch("espaut.review.pr_reviews_json", return_value=mock_reviews), \
              patch("espaut.review.pr_comments_json", return_value=mock_comments), \
-             patch("espaut.review.pr_review_comments_json", return_value=mock_code_comments):
+             patch("espaut.review.pr_review_comments_json", return_value=mock_code_comments), \
+             patch("espaut.review.pr_review_threads_json", return_value=[]):
             result = collect_reviews(store, "TASK-001", 42)
             return {
                 "collected": "PASS" if result["status"] == "collected" else "FAIL",

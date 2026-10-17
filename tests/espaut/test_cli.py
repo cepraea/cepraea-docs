@@ -136,9 +136,10 @@ def test_cmd_merge_check() -> dict[str, str]:
         store, task_id = _make_test_env(path)
         mock_result = {
             "verdict": "APTA_PARA_INTEGRACAO",
-            "criteria": [{"name": "C1", "passed": True, "detail": "ok"}],
+            "criteria": [{"criterion": "C1_preservation", "status": "PASS", "detail": "ok"}],
         }
         with patch("espaut.cli.require_store", return_value=store), \
+             patch("espaut.cli.query_pr_state", return_value={"status": "available", "head_sha": "abc123"}), \
              patch("espaut.cli.query_checks", return_value={}), \
              patch("espaut.cli.collect_reviews", return_value={"reviews": [], "comments": [], "code_comments": []}), \
              patch("espaut.cli.extract_pendencies", return_value=[]), \
@@ -216,7 +217,7 @@ def test_cmd_sync() -> dict[str, str]:
              patch("espaut.cli.detect_pending_preservation", return_value={"status": "clean"}):
             sys.argv = ["espaut", "sync", "--task", task_id]
             rc = main()
-        return {"sync_ok": "PASS" if rc == 0 else f"FAIL: rc={rc}"}
+        return {"sync_missing_remote": "PASS" if rc == 1 else f"FAIL: rc={rc}"}
 
 
 def test_cmd_watch() -> dict[str, str]:

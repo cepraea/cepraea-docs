@@ -1,0 +1,43 @@
+name: ESPAUT Python tests
+on:
+  push:
+    paths:
+      - "espaut/**"
+      - "schemas/**"
+      - "tests/espaut/**"
+      - ".github/workflows/espaut-ci.yml"
+  pull_request:
+    paths:
+      - "espaut/**"
+      - "schemas/**"
+      - "tests/espaut/**"
+      - ".github/workflows/espaut-ci.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout revision
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run deterministic Python tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B - <<'PYCODE'
+          import ast
+          from pathlib import Path
+          for p in sorted(Path('espaut').glob('*.py')):
+              ast.parse(p.read_text(encoding='utf-8'))
+          print('SYNTAX_PASS')
+          PYCODE
+          for test_file in tests/espaut/test_*.py; do
+            echo "RUN $test_file"
+            python -B "$test_file"
+          done

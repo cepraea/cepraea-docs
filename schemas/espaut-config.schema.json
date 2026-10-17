@@ -23,15 +23,24 @@
     },
     "trigger_mode": {
       "type": "string",
-      "enum": ["explicit", "hook", "watch"]
+      "enum": [
+        "explicit",
+        "hook",
+        "watch",
+        "session"
+      ]
     },
     "preservation_events": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "eligible_patterns": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "ai_enabled": {
       "type": "boolean"
@@ -41,11 +50,17 @@
     },
     "resolver_roles": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "merge_policy": {
       "type": "string",
-      "enum": ["manual", "semi_auto", "auto"]
+      "enum": [
+        "manual",
+        "semi_auto",
+        "auto"
+      ]
     },
     "correction_max_attempts": {
       "type": "integer",
@@ -53,10 +68,25 @@
     },
     "retention_policy": {
       "type": "string",
-      "enum": ["retain_all", "retain_recent", "archive"]
+      "enum": [
+        "retain_all",
+        "retain_recent",
+        "archive"
+      ]
     },
     "ci_required": {
       "type": "boolean"
+    },
+    "correction_test_command": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "ai_sharing_authorized": {
+      "type": "boolean",
+      "description": "Explicit permission to transmit authorized work to a connected external AI assistant; default false"
     }
   }
 }
