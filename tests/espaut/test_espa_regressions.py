@@ -211,17 +211,82 @@ class Contracts(unittest.TestCase):
             self.assertEqual(result["status"],"blocked")
             self.assertIn("correction_test_command",result["reason"])
 
+    def _isolated_agent_fixture(self, p):
+        run("git","init",cwd=p)
+        run("git","config","user.email","test@example.org",cwd=p)
+        run("git","config","user.name","Test",cwd=p)
+        (p/"base.txt").write_text("baseline")
+        run("git","add","base.txt",cwd=p)
+        run("git","commit","-m","initial",cwd=p)
+        run("git","switch","-c","feature/test",cwd=p)
+        store=init_store(p)
+        task={"task_id":"T1","authorized_scope":["src/*.py"],"branch_name":"feature/test"}
+        source={"description":"fix bug","classification":"MUDANCA_REQUERIDA"}
+        return store,task,source
+
     def test_ai_correction_verified_by_real_gate(self):
         from espaut.correction import apply_agent_correction
+        import subprocess
+        real_run=subprocess.run
         with tempfile.TemporaryDirectory() as d:
-            store=init_store(Path(d))
-            write_json(store/"config.json",{"ai_enabled":True,"ai_sharing_authorized":True,"correction_test_command":[sys.executable,"-B","-c","print(1)"]})
-            task={"task_id":"T1","authorized_scope":["src/*.py"]}
-            source={"description":"fix bug","classification":"MUDANCA_REQUERIDA"}
-            with patch("espaut.git_ops.current_branch",return_value="feature/a"),patch("espaut.git_ops.worktree_status",side_effect=[[],[{"path":"src/a.py"}]]),patch("shutil.which",return_value="/usr/bin/codex"),patch("subprocess.run",side_effect=[cp(0),cp(0)]):
+            p=Path(d)
+            store,task,source=self._isolated_agent_fixture(p)
+            write_json(store/"config.json",{
+                "ai_enabled":True,"ai_sharing_authorized":True,
+                "correction_test_command":[sys.executable,"-B","-c",'from pathlib import Path; assert Path("src/a.py").read_text()=="print(1)\\n"'],
+            })
+            def execute(args,**kw):
+                if args[0]=="codex":
+                    work=Path(kw["cwd"])
+                    (work/"src").mkdir()
+                    (work/"src"/"a.py").write_text("print(1)\n")
+                    return cp(0)
+                return real_run(args,**kw)
+            with patch("subprocess.run",side_effect=execute),patch("shutil.which",return_value="/usr/bin/codex"):
                 result=apply_agent_correction(store,task,source,"codex",cwd=d)
             self.assertEqual(result["status"],"verified",result)
+            self.assertEqual((p/"src"/"a.py").read_text(),"print(1)\n")
             self.assertEqual(result["changed_files"],["src/a.py"])
+
+    def test_tst014_out_of_scope_edits_stay_in_disposable_worktree(self):
+        from espaut.correction import apply_agent_correction
+        import subprocess
+        real_run=subprocess.run
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d);store,task,source=self._isolated_agent_fixture(p)
+            write_json(store/"config.json",{"ai_enabled":True,"ai_sharing_authorized":True,"correction_test_command":[sys.executable,"-c","print(1)"]})
+            def execute(args,**kw):
+                if args[0]=="codex":
+                    (Path(kw["cwd"])/"outside.txt").write_text("unauthorized")
+                    return cp(0)
+                return real_run(args,**kw)
+            with patch("subprocess.run",side_effect=execute),patch("shutil.which",return_value="/usr/bin/codex"):
+                result=apply_agent_correction(store,task,source,"codex",cwd=d)
+            self.assertEqual(result["status"],"blocked",result)
+            self.assertFalse((p/"outside.txt").exists())
+            self.assertEqual(run("git","status","--porcelain",cwd=p).stdout,"")
+
+    def test_tst016_agent_claim_pass_does_not_override_failing_test(self):
+        from espaut.correction import apply_agent_correction
+        import subprocess
+        real_run=subprocess.run
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d);store,task,source=self._isolated_agent_fixture(p)
+            write_json(store/"config.json",{
+                "ai_enabled":True,"ai_sharing_authorized":True,
+                "correction_test_command":[sys.executable,"-B","-c","raise AssertionError('expected failing test')"],
+            })
+            def execute(args,**kw):
+                if args[0]=="codex":
+                    work=Path(kw["cwd"]);(work/"src").mkdir()
+                    (work/"src"/"a.py").write_text("bug")
+                    return cp(0,"PASS (agent self-report)")
+                return real_run(args,**kw)
+            with patch("subprocess.run",side_effect=execute),patch("shutil.which",return_value="/usr/bin/codex"):
+                result=apply_agent_correction(store,task,source,"codex",cwd=d)
+            self.assertEqual(result["status"],"blocked",result)
+            self.assertIn("verification failed",result["reason"])
+            self.assertFalse((p/"src"/"a.py").exists())
 
     def test_secret_in_staged_diff_blocks_commit(self):
         with tempfile.TemporaryDirectory() as d:

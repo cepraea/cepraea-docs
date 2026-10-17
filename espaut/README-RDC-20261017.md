@@ -33,7 +33,7 @@ python3 -m espaut merge-check --task TASK-IDENTIFICADOR
 
 `session` é um wrapper: só acompanha comandos executados por ele. **Não intercepta automaticamente todas as sessões já abertas no VS Code.** Se `auto_commit=false`, registra e apresenta a pendência, sem fazer commit. Se `auto_commit=true`, exige `eligible_patterns` explícitos e bloqueia push em main/master.
 
-`correct --agent codex|claude --confirm` exige permissão explícita `ai_enabled=true` e `ai_sharing_authorized=true`, uma pendência previamente coletada, escopo e `correction_test_command` em `.espaut/config.json`. Sem essas condições, recusa a modificação. Os agentes usam a autenticação instalada, sem API paga própria adicionada pelo ESPAUT.
+`correct --agent codex|claude --confirm` exige permissão explícita `ai_enabled=true` e `ai_sharing_authorized=true`, uma pendência previamente coletada, escopo e `correction_test_command` em `.espaut/config.json`. Sem essas condições, recusa a modificação. Os agentes usam a autenticação instalada, sem API paga própria adicionada pelo ESPAUT. Correções assistidas são processadas primeiro em um worktree Git temporário isolado; apenas um patch previamente validado e aprovado pelo controle de escopo pode ser aplicado ao checkout original.
 
 ## Evidências
 
